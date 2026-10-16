@@ -701,6 +701,12 @@ def _mcp_registry_scope() -> Optional[str]:
     session_scope = current_session_tool_scope()
     if session_scope is not None:
         return session_scope
+    return _profile_registry_scope()
+
+
+def _profile_registry_scope() -> Optional[str]:
+    """The registry scope of the profile this process serves, ignoring any session overlay: a
+    profile overlay when this process serves routed profiles, else None (bare names)."""
     from agent.secret_scope import serves_routed_profile
     if not serves_routed_profile():
         return None

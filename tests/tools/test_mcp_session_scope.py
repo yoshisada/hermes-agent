@@ -42,3 +42,42 @@ for line in sys.stdin:
     finally:
         shutdown_mcp_servers(scope='editor-session:a')
         shutdown_mcp_servers(scope='editor-session:b')
+
+
+def test_session_overlay_reaches_profile_configured_server(tmp_path):
+    """An ACP editor session runs its turns inside ``editor-session:<hash>``; the profile's own
+    configured servers stay registered and visible there, so calls to them must reach the
+    profile connection instead of answering "not connected"."""
+    from tools.registry import registry, session_tool_scope
+    from tools.mcp_tool_discovery import register_mcp_servers
+    from tools.mcp_tool_lifecycle import shutdown_mcp_servers
+
+    script = tmp_path / 'peer.py'
+    script.write_text('''import json, os, sys
+for line in sys.stdin:
+ r=json.loads(line); method=r.get('method'); ident=r.get('id')
+ if ident is None: continue
+ if method=='initialize': result={'protocolVersion':r['params']['protocolVersion'],'capabilities':{'tools':{}},'serverInfo':{'name':'peer','version':'1'}}
+ elif method=='tools/list': result={'tools':[{'name':'echo','description':'echo','inputSchema':{'type':'object','properties':{}}}]}
+ elif method=='tools/call': result={'content':[{'type':'text','text':os.environ['MARKER']}]}
+ else: result={}
+ print(json.dumps({'jsonrpc':'2.0','id':ident,'result':result}),flush=True)
+''')
+
+    def config(marker):
+        return {'command': sys.executable, 'args': [str(script)], 'env': {'MARKER': marker},
+                'connect_timeout': 5}
+
+    try:
+        register_mcp_servers({'profile_peer': config('FROM_PROFILE')})
+        profile_tool = next(n for n in registry.get_all_tool_names() if n.startswith('mcp__profile_peer'))
+        with session_tool_scope('editor-session:a'):
+            register_mcp_servers({'session_peer': config('FROM_SESSION_A')})
+            assert 'FROM_PROFILE' in registry.dispatch(profile_tool, {})
+        session_tool = 'mcp__session_peer__echo'
+        with session_tool_scope('editor-session:b'):
+            assert 'FROM_PROFILE' in registry.dispatch(profile_tool, {})
+            assert registry.get_entry(session_tool) is None
+    finally:
+        shutdown_mcp_servers(scope='editor-session:a')
+        shutdown_mcp_servers()

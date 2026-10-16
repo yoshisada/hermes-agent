@@ -51,7 +51,15 @@ def _key_visible_in_scope(key: ServerKey, scope: Optional[str]) -> bool:
 def _resolve_server_key(name: str, scope: Optional[str] = None, *, current: bool = True) -> ServerKey:
     """The connection key a call to *name* from *scope* must use: the scope's own connection
     (live, connecting or lazily registered) when it has one, else a shared connection it
-    adopted, else its own (not yet existing) key so bookkeeping lands under this scope."""
+    adopted, else (for the current session overlay only) the profile's own connection, else
+    its own (not yet existing) key so bookkeeping lands under this scope.
+
+    A session overlay (``tools.registry.session_tool_scope``, e.g. an ACP editor session's
+    ``editor-session:<hash>``) is additive to the profile registry: the profile's configured
+    servers stay registered and visible to the model inside it, so a call to one must reach the
+    profile's connection instead of reporting "not connected". Sibling sessions still never see
+    each other's servers: the fallback only drops the overlay, it never switches to another one."""
+    overlay = scope is None and current and _session_overlay_active()
     if scope is None and current:
         scope = _core._mcp_registry_scope()
     own = _server_key(name, scope, current=False)
@@ -60,4 +68,13 @@ def _resolve_server_key(name: str, scope: Optional[str] = None, *, current: bool
     for key, scopes in _core._server_tool_scopes.items():
         if scope in scopes and _key_name(key) == name and key in _core._servers:
             return key
+    if overlay:
+        profile_key = _resolve_server_key(name, _core._profile_registry_scope(), current=False)
+        if profile_key in _core._servers or profile_key in _core._lazy_server_configs:
+            return profile_key
     return own
+
+
+def _session_overlay_active() -> bool:
+    from tools.registry import current_session_tool_scope
+    return current_session_tool_scope() is not None
