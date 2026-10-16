@@ -120,6 +120,96 @@ def test_acp_real_agent_gets_session_db_for_recall(monkeypatch):
     assert captured["session_id"] == "acp-session"
 
 
+def _make_agent_with_config(monkeypatch, config):
+    """Build a real-path ACP agent against ``config`` and return the AIAgent kwargs."""
+    captured = {}
+
+    class CapturingAgent(FakeAgent):
+        def __init__(self, **kwargs):
+            super().__init__()
+            captured.update(kwargs)
+
+    def mod(name, **attrs):
+        module = ModuleType(name)
+        for key, value in attrs.items():
+            setattr(module, key, value)
+        return module
+
+    monkeypatch.setitem(sys.modules, "run_agent", mod("run_agent", AIAgent=CapturingAgent))
+    monkeypatch.setitem(
+        sys.modules, "hermes_cli.config", mod("hermes_cli.config", load_config=lambda: config)
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.runtime_provider",
+        mod(
+            "hermes_cli.runtime_provider",
+            resolve_runtime_provider=lambda **_kwargs: {
+                "provider": "p",
+                "api_mode": "chat_completions",
+                "base_url": "u",
+                "api_key": "k",
+                "command": None,
+                "args": [],
+            },
+        ),
+    )
+
+    SessionManager(db=NoopDb())._make_agent(session_id="acp-session", cwd=".")
+    return captured
+
+
+@pytest.mark.parametrize(
+    "configured",
+    [
+        ["browser", "delegation"],
+        '["browser", "delegation"]',  # `hermes config set` stores lists as JSON strings
+    ],
+)
+def test_acp_real_agent_honours_configured_disabled_toolsets(monkeypatch, configured):
+    """agent.disabled_toolsets from config.yaml reaches the ACP agent like it reaches the CLI."""
+    captured = _make_agent_with_config(
+        monkeypatch,
+        {"model": {"default": "m", "provider": "p"}, "agent": {"disabled_toolsets": configured}},
+    )
+
+    assert captured["enabled_toolsets"] == ["hermes-acp"]
+    assert captured["disabled_toolsets"] == ["browser", "delegation"]
+
+
+def test_acp_real_agent_without_disabled_toolsets_passes_none(monkeypatch):
+    captured = _make_agent_with_config(
+        monkeypatch, {"model": {"default": "m", "provider": "p"}, "agent": {}}
+    )
+
+    assert captured["disabled_toolsets"] is None
+
+
+def test_acp_tools_command_subtracts_disabled_toolsets(monkeypatch):
+    """/tools must report the same surface the agent runs with, disabled toolsets included."""
+    acp_agent, state, fake, _conn = make_agent_and_state()
+    fake.disabled_toolsets = ["browser", "delegation"]
+    calls = []
+
+    def fake_get_tool_definitions(**kwargs):
+        calls.append(kwargs)
+        return [{"type": "function", "function": {"name": "terminal", "description": "Run"}}]
+
+    monkeypatch.setattr("model_tools.get_tool_definitions", fake_get_tool_definitions)
+
+    text = acp_agent._cmd_tools("", state)
+
+    assert calls == [
+        {
+            "enabled_toolsets": ["hermes-acp"],
+            "disabled_toolsets": ["browser", "delegation"],
+            "quiet_mode": True,
+        }
+    ]
+    assert text.startswith("Available tools (1):")
+    assert "terminal" in text
+
+
 @pytest.mark.asyncio
 async def test_acp_steer_slash_command_injects_into_running_agent():
     acp_agent, state, fake, _conn = make_agent_and_state()

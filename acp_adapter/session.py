@@ -155,6 +155,24 @@ def _expand_acp_enabled_toolsets(
     return expanded
 
 
+def _configured_disabled_toolsets(config: Dict[str, Any]) -> List[str] | None:
+    """``agent.disabled_toolsets`` from the loaded config, read as the CLI reads it.
+
+    The CLI and ``hermes prompt-size`` subtract the profile's disabled toolsets
+    from whatever bundle the platform enables. ACP sessions pinned
+    ``hermes-acp`` and never consulted the key, so a profile that disables
+    e.g. ``browser`` or ``delegation`` still handed the editor the full bundle.
+    Returns ``None`` (not ``[]``) when nothing is disabled so the agent keeps
+    the same attribute value it gets from a bare ``AIAgent()``.
+    """
+    from agent.skill_utils import parse_config_string_list
+
+    agent_cfg = config.get("agent")
+    if not isinstance(agent_cfg, dict):
+        return None
+    return parse_config_string_list(agent_cfg.get("disabled_toolsets")) or None
+
+
 def _clear_task_cwd(task_id: str) -> None:
     """Remove task-specific cwd overrides for an ACP session."""
     if not task_id:
@@ -638,6 +656,7 @@ class SessionManager:
                 ["hermes-acp"],
                 mcp_server_names=configured_mcp_servers,
             ),
+            "disabled_toolsets": _configured_disabled_toolsets(config),
             "quiet_mode": True,
             "session_id": session_id,
             "session_db": self._get_db(),
